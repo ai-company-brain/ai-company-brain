@@ -13,7 +13,8 @@ import { Script } from "node:vm";
 import { execFile } from "node:child_process";
 import { listMail, listCalendar, sendMail, createEvent } from "./lib/google.js";
 import {
-  lineConfigured, verifySignature, replyText, pushRecent, getRecent, isOwner,
+  lineConfigured, verifySignature, replyText, pushText, pushRecent, getRecent, isOwner,
+  setLastUserId, getLastUserId,
 } from "./lib/line.js";
 import { handleInstruction } from "./lib/ai.js";
 
@@ -39,6 +40,7 @@ app.post("/webhook", express.raw({ type: "*/*" }), async (req, res) => {
       const userId = ev.source?.userId;
       const text = ev.message.text;
       pushRecent("them", text);
+      if (isOwner(userId) && userId) setLastUserId(userId);
       if (!isOwner(userId)) {
         await replyText(ev.replyToken, "（このAI会社は社長専用です）userId: " + (userId || "不明"));
         continue;
@@ -152,6 +154,21 @@ app.post("/api/actions/create-event", async (req, res) => {
       message: "この予定で作成します。よろしければ approve:true で再送してください。" });
   }
   try { res.json({ status: "created", ...(await createEvent({ title, start, end })) }); }
+  catch (e) { res.status(400).json({ status: "error", message: e.message }); }
+});
+
+// LINEで社長へこちらからお知らせを送る（直近に社長からメッセージが来ていないと宛先が分からないため使えない）
+app.post("/api/actions/line-notify", async (req, res) => {
+  const { text, approve } = req.body || {};
+  const to = getLastUserId();
+  if (!to) {
+    return res.status(400).json({ status: "error", message: "まだ社長のLINEユーザーIDが分かっていません。一度LINEでメッセージを送ってもらってから試してください。" });
+  }
+  if (REQUIRE_APPROVAL && !approve) {
+    return res.json({ status: "needs_approval", preview: { to, text },
+      message: "この内容でLINEに送ります。よろしければ approve:true で再送してください。" });
+  }
+  try { await pushText(to, text); pushRecent("me", text); res.json({ status: "sent" }); }
   catch (e) { res.status(400).json({ status: "error", message: e.message }); }
 });
 
